@@ -1,0 +1,6 @@
+{
+  "name": "F Discord Web Chat Portal",
+  "description": "A website where users can register with a unique username and password to chat directly with the admin via a Discord bot.",
+  "requestFramePermissions": [],
+  "majorCapabilities": []
+}
