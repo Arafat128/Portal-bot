@@ -77,25 +77,43 @@ async function startServer() {
 
       // Command format: !reply <username> <message>
       if (message.content.startsWith('!reply ')) {
-        const parts = message.content.split(' ');
-        if (parts.length < 3) {
-          message.reply('Usage: `!reply <username> <message>`');
-          return;
-        }
-
-        const targetUsername = parts[1];
-        const replyContent = parts.slice(2).join(' ');
-
+        const contentAfterCommand = message.content.slice('!reply '.length).trim();
+        
         try {
-          const user = await db.get('SELECT id FROM users WHERE username = ?', [targetUsername]);
-          if (!user) {
-            message.reply(`User \`${targetUsername}\` not found.`);
+          const users = await db.all('SELECT id, username FROM users');
+          let matchedUser = null;
+          let replyContent = '';
+
+          // Sort users by username length descending to match the longest possible username first
+          users.sort((a, b) => b.username.length - a.username.length);
+
+          for (const user of users) {
+            if (contentAfterCommand.toLowerCase().startsWith(user.username.toLowerCase())) {
+              // Check if the next character is a space or end of string to avoid partial matches
+              const nextChar = contentAfterCommand[user.username.length];
+              if (nextChar === ' ' || nextChar === undefined) {
+                matchedUser = user;
+                replyContent = contentAfterCommand.slice(user.username.length).trim();
+                break;
+              }
+            }
+          }
+
+          if (!matchedUser) {
+            // Fallback to the first word if no user matched
+            const firstWord = contentAfterCommand.split(' ')[0];
+            message.reply(`User \`${firstWord}\` not found.`);
+            return;
+          }
+
+          if (!replyContent) {
+            message.reply('Please provide a message to send.');
             return;
           }
 
           await db.run(
             'INSERT INTO messages (user_id, content, sender) VALUES (?, ?, ?)',
-            [user.id, replyContent, 'admin']
+            [matchedUser.id, replyContent, 'admin']
           );
 
           message.react('✅'); // React with checkmark
@@ -109,6 +127,15 @@ async function startServer() {
     discordClient.login(process.env.DISCORD_BOT_TOKEN).catch(err => {
       console.error('Failed to login to Discord:', err);
     });
+
+    // Graceful shutdown to prevent multiple bot instances during dev server restarts
+    const shutdown = () => {
+      console.log('Shutting down, destroying Discord client...');
+      discordClient.destroy();
+      process.exit(0);
+    };
+    process.on('SIGTERM', shutdown);
+    process.on('SIGINT', shutdown);
   } else {
     console.warn('DISCORD_BOT_TOKEN is not set. Discord integration is disabled.');
   }
@@ -139,12 +166,17 @@ async function startServer() {
 
   app.post('/api/register', async (req, res) => {
     try {
-      const { username, password } = req.body;
+      let { username, password } = req.body;
       if (!username || !password) {
         return res.status(400).json({ error: 'Username and password are required' });
       }
 
-      const existingUser = await db.get('SELECT id FROM users WHERE username = ?', [username]);
+      username = username.trim();
+      if (username.includes(' ')) {
+        return res.status(400).json({ error: 'Username cannot contain spaces' });
+      }
+
+      const existingUser = await db.get('SELECT id FROM users WHERE LOWER(username) = LOWER(?)', [username]);
       if (existingUser) {
         return res.status(409).json({ error: 'Username already exists. Please choose another one.' });
       }
@@ -162,8 +194,9 @@ async function startServer() {
 
   app.post('/api/login', async (req, res) => {
     try {
-      const { username, password } = req.body;
-      const user = await db.get('SELECT * FROM users WHERE username = ?', [username]);
+      let { username, password } = req.body;
+      username = username?.trim();
+      const user = await db.get('SELECT * FROM users WHERE LOWER(username) = LOWER(?)', [username]);
       
       if (!user) {
         return res.status(401).json({ error: 'Invalid username or password' });
